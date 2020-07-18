@@ -23,6 +23,9 @@ insert: debug
 test: insert
 	sudo PATH="$$PATH:/usr/sbin:/sbin:/usr/bin:/bin:/usr/local/sbin:/usr/local/bin" ./tests/netns.sh
 
+test-pq: insert
+	sudo PATH="$$PATH:/usr/sbin:/sbin:/usr/bin:/bin:/usr/local/sbin:/usr/local/bin" ./tests/netns-pq.sh
+
 test-qemu:
 	$(MAKE) -C tests/qemu
 

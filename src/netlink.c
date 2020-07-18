@@ -14,22 +14,35 @@
 #include <net/genetlink.h>
 #include <net/sock.h>
 #include <crypto/algapi.h>
+#ifdef SUPPORTS_PQC
+#include <kyber/params.h>
+#include <kyber/fips202.h>
+#endif /* SUPPORTS_PQC */
 
 static struct genl_family genl_family;
 
 static const struct nla_policy device_policy[WGDEVICE_A_MAX + 1] = {
 	[WGDEVICE_A_IFINDEX]		= { .type = NLA_U32 },
 	[WGDEVICE_A_IFNAME]		= { .type = NLA_NUL_STRING, .len = IFNAMSIZ - 1 },
+#ifdef SUPPORTS_CURVE
 	[WGDEVICE_A_PRIVATE_KEY]	= { .type = NLA_EXACT_LEN, .len = NOISE_PUBLIC_KEY_LEN },
 	[WGDEVICE_A_PUBLIC_KEY]		= { .type = NLA_EXACT_LEN, .len = NOISE_PUBLIC_KEY_LEN },
+#endif /* SUPPORTS_CURVE */
 	[WGDEVICE_A_FLAGS]		= { .type = NLA_U32 },
 	[WGDEVICE_A_LISTEN_PORT]	= { .type = NLA_U16 },
 	[WGDEVICE_A_FWMARK]		= { .type = NLA_U32 },
-	[WGDEVICE_A_PEERS]		= { .type = NLA_NESTED }
+	[WGDEVICE_A_PEERS]		= { .type = NLA_NESTED },
+#ifdef SUPPORTS_PQC
+    [WGDEVICE_A_PQ_SECRET_KEY]	= { .type = NLA_EXACT_LEN, .len = NOISE_PQ_SECRET_KEY_LEN },
+    [WGDEVICE_A_PQ_PUBLIC_KEY]	= { .type = NLA_EXACT_LEN, .len = NOISE_PQ_PUBLIC_KEY_LEN },
+    [WGDEVICE_A_PQ_SECRET_KEY_PATH]	= { .type = NLA_NUL_STRING, .len = 256 }
+#endif /* SUPPORTS_PQC */
 };
 
 static const struct nla_policy peer_policy[WGPEER_A_MAX + 1] = {
+#ifdef SUPPORTS_CURVE
 	[WGPEER_A_PUBLIC_KEY]				= { .type = NLA_EXACT_LEN, .len = NOISE_PUBLIC_KEY_LEN },
+#endif /* SUPPORTS_CURVE */
 	[WGPEER_A_PRESHARED_KEY]			= { .type = NLA_EXACT_LEN, .len = NOISE_SYMMETRIC_KEY_LEN },
 	[WGPEER_A_FLAGS]				= { .type = NLA_U32 },
 	[WGPEER_A_ENDPOINT]				= { .type = NLA_MIN_LEN, .len = sizeof(struct sockaddr) },
@@ -38,7 +51,11 @@ static const struct nla_policy peer_policy[WGPEER_A_MAX + 1] = {
 	[WGPEER_A_RX_BYTES]				= { .type = NLA_U64 },
 	[WGPEER_A_TX_BYTES]				= { .type = NLA_U64 },
 	[WGPEER_A_ALLOWEDIPS]				= { .type = NLA_NESTED },
-	[WGPEER_A_PROTOCOL_VERSION]			= { .type = NLA_U32 }
+	[WGPEER_A_PROTOCOL_VERSION]			= { .type = NLA_U32 },
+#ifdef SUPPORTS_PQC
+    [WGPEER_A_PQ_PUBLIC_KEY]			= { .type = NLA_EXACT_LEN, .len = NOISE_PQ_PUBLIC_KEY_LEN },
+    [WGPEER_A_PQ_PUBLIC_KEY_PATH]		= { .type = NLA_NUL_STRING, .len = 256 }
+#endif /* SUPPORTS_PQC */
 };
 
 static const struct nla_policy allowedip_policy[WGALLOWEDIP_A_MAX + 1] = {
@@ -112,8 +129,20 @@ get_peer(struct wg_peer *peer, struct sk_buff *skb, struct dump_ctx *ctx)
 		return -EMSGSIZE;
 
 	down_read(&peer->handshake.lock);
-	fail = nla_put(skb, WGPEER_A_PUBLIC_KEY, NOISE_PUBLIC_KEY_LEN,
-		       peer->handshake.remote_static);
+#if defined SUPPORTS_PQC && defined SUPPORTS_CURVE
+    if(peer->handshake.supports_pq)
+        fail = nla_put_string(skb, WGPEER_A_PQ_PUBLIC_KEY_PATH,
+                              peer->handshake.pq_remote_pk_path);
+    else
+        fail = nla_put(skb, WGPEER_A_PUBLIC_KEY, NOISE_PUBLIC_KEY_LEN,
+                   peer->handshake.remote_static);
+#elif defined  SUPPORTS_PQC
+    fail = nla_put_string(skb, WGPEER_A_PQ_PUBLIC_KEY_PATH,
+                      peer->handshake.pq_remote_pk_path);
+#else
+    fail = nla_put(skb, WGPEER_A_PUBLIC_KEY, NOISE_PUBLIC_KEY_LEN,
+                   peer->handshake.remote_static);
+#endif
 	up_read(&peer->handshake.lock);
 	if (fail)
 		goto err;
@@ -234,19 +263,32 @@ static int wg_get_device_dump(struct sk_buff *skb, struct netlink_callback *cb)
 		    nla_put_string(skb, WGDEVICE_A_IFNAME, wg->dev->name))
 			goto out;
 
+#ifdef SUPPORTS_CURVE
 		down_read(&wg->static_identity.lock);
-		if (wg->static_identity.has_identity) {
-			if (nla_put(skb, WGDEVICE_A_PRIVATE_KEY,
-				    NOISE_PUBLIC_KEY_LEN,
-				    wg->static_identity.static_private) ||
-			    nla_put(skb, WGDEVICE_A_PUBLIC_KEY,
-				    NOISE_PUBLIC_KEY_LEN,
-				    wg->static_identity.static_public)) {
-				up_read(&wg->static_identity.lock);
-				goto out;
-			}
-		}
-		up_read(&wg->static_identity.lock);
+        if (wg->static_identity.has_identity) {
+            if (nla_put(skb, WGDEVICE_A_PRIVATE_KEY,
+                        NOISE_PUBLIC_KEY_LEN,
+                        wg->static_identity.static_private) ||
+                nla_put(skb, WGDEVICE_A_PUBLIC_KEY,
+                        NOISE_PUBLIC_KEY_LEN,
+                        wg->static_identity.static_public)) {
+                up_read(&wg->static_identity.lock);
+                goto out;
+            }
+        }
+        up_read(&wg->static_identity.lock);
+#endif /* SUPPORTS_CURVE */
+#ifdef SUPPORTS_PQC
+        down_read(&wg->pq_static_identity.lock);
+        if (wg->pq_static_identity.has_identity) {
+            if (nla_put_string(skb, WGDEVICE_A_PQ_SECRET_KEY_PATH,
+                        wg->pq_static_identity.sk_path)) {
+                up_read(&wg->pq_static_identity.lock);
+                goto out;
+            }
+        }
+		up_read(&wg->pq_static_identity.lock);
+#endif /* SUPPORTS_PQC */
 	}
 
 	peers_nest = nla_nest_start(skb, WGDEVICE_A_PEERS);
@@ -352,19 +394,47 @@ static int set_allowedip(struct wg_peer *peer, struct nlattr **attrs)
 	return ret;
 }
 
-static int set_peer(struct wg_device *wg, struct nlattr **attrs)
-{
-	u8 *public_key = NULL, *preshared_key = NULL;
-	struct wg_peer *peer = NULL;
-	u32 flags = 0;
-	int ret;
+static int set_peer(struct wg_device *wg, struct nlattr **attrs) {
+    u8 *public_key = NULL, *preshared_key = NULL;
+#ifdef SUPPORTS_PQC
+    u8 *pq_pk = NULL;
+    u8 pq_pk_hash[NOISE_PQ_PUBLIC_KEY_HASH_LEN];
+    char pq_pk_path[256];
+#endif /* SUPPORTS_PQC */
+#if defined SUPPORTS_PQC && defined SUPPORTS_CURVE
+    bool is_pq = false;
+#endif
 
-	ret = -EINVAL;
-	if (attrs[WGPEER_A_PUBLIC_KEY] &&
-	    nla_len(attrs[WGPEER_A_PUBLIC_KEY]) == NOISE_PUBLIC_KEY_LEN)
-		public_key = nla_data(attrs[WGPEER_A_PUBLIC_KEY]);
-	else
-		goto out;
+    struct wg_peer *peer = NULL;
+    u32 flags = 0;
+    int ret;
+
+    ret = -EINVAL;
+
+
+#ifdef SUPPORTS_PQC
+    if (attrs[WGPEER_A_PQ_PUBLIC_KEY] &&
+        nla_len(attrs[WGPEER_A_PQ_PUBLIC_KEY]) == NOISE_PQ_PUBLIC_KEY_LEN &&
+        attrs[WGPEER_A_PQ_PUBLIC_KEY_PATH]) {
+        pq_pk = nla_data(attrs[WGPEER_A_PQ_PUBLIC_KEY]);
+        strncpy(pq_pk_path, nla_data(attrs[WGPEER_A_PQ_PUBLIC_KEY_PATH]), sizeof(pq_pk_path) - 1);
+        sha3_256(pq_pk_hash, pq_pk, NOISE_PQ_PUBLIC_KEY_LEN);
+        public_key = pq_pk_hash;
+#ifdef SUPPORTS_CURVE
+        is_pq = true;
+    } else
+#endif /* SUPPORTS_CURVE */
+#endif /* SUPPORTS_PQC */
+#ifdef SUPPORTS_CURVE
+    if (attrs[WGPEER_A_PUBLIC_KEY] &&
+        nla_len(attrs[WGPEER_A_PUBLIC_KEY]) == NOISE_PUBLIC_KEY_LEN) {
+        public_key = nla_data(attrs[WGPEER_A_PUBLIC_KEY]);
+#endif /* SUPPORTS_CURVE */
+    } else {
+        goto out;
+    }
+
+
 	if (attrs[WGPEER_A_PRESHARED_KEY] &&
 	    nla_len(attrs[WGPEER_A_PRESHARED_KEY]) == NOISE_SYMMETRIC_KEY_LEN)
 		preshared_key = nla_data(attrs[WGPEER_A_PRESHARED_KEY]);
@@ -382,7 +452,7 @@ static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 	}
 
 	peer = wg_pubkey_hashtable_lookup(wg->peer_hashtable,
-					  nla_data(attrs[WGPEER_A_PUBLIC_KEY]));
+                                      public_key);
 	ret = 0;
 	if (!peer) { /* Peer doesn't exist yet. Add a new one. */
 		if (flags & (WGPEER_F_REMOVE_ME | WGPEER_F_UPDATE_ONLY))
@@ -391,23 +461,48 @@ static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 		/* The peer is new, so there aren't allowed IPs to remove. */
 		flags &= ~WGPEER_F_REPLACE_ALLOWEDIPS;
 
-		down_read(&wg->static_identity.lock);
-		if (wg->static_identity.has_identity &&
-		    !memcmp(nla_data(attrs[WGPEER_A_PUBLIC_KEY]),
-			    wg->static_identity.static_public,
-			    NOISE_PUBLIC_KEY_LEN)) {
-			/* We silently ignore peers that have the same public
-			 * key as the device. The reason we do it silently is
-			 * that we'd like for people to be able to reuse the
-			 * same set of API calls across peers.
-			 */
-			up_read(&wg->static_identity.lock);
-			ret = 0;
-			goto out;
-		}
-		up_read(&wg->static_identity.lock);
+#if defined SUPPORTS_PQC && defined SUPPORTS_CURVE
+		if(is_pq) {
+#endif
+#ifdef SUPPORTS_PQC
+            down_read(&wg->pq_static_identity.lock);
+            if (wg->pq_static_identity.has_identity &&
+                !memcmp(nla_data(attrs[WGPEER_A_PQ_PUBLIC_KEY]),
+                        wg->pq_static_identity.pk,
+                        NOISE_PQ_PUBLIC_KEY_LEN)) {
 
-		peer = wg_peer_create(wg, public_key, preshared_key);
+                up_read(&wg->pq_static_identity.lock);
+                ret = 0;
+                goto out;
+            }
+            up_read(&wg->pq_static_identity.lock);
+            // public_key -> pq_pk_hash
+            peer = wg_peer_create_pq(wg, pq_pk, public_key, pq_pk_path, preshared_key);
+#endif /* SUPPORTS_PQC */
+#if defined SUPPORTS_PQC && defined SUPPORTS_CURVE
+        } else {
+#endif
+#ifdef SUPPORTS_CURVE
+            down_read(&wg->static_identity.lock);
+            if (wg->static_identity.has_identity &&
+                !memcmp(nla_data(attrs[WGPEER_A_PUBLIC_KEY]),
+                        wg->static_identity.static_public,
+                        NOISE_PUBLIC_KEY_LEN)) {
+                /* We silently ignore peers that have the same public
+                 * key as the device. The reason we do it silently is
+                 * that we'd like for people to be able to reuse the
+                 * same set of API calls across peers.
+                 */
+                up_read(&wg->static_identity.lock);
+                ret = 0;
+                goto out;
+            }
+            up_read(&wg->static_identity.lock);
+            peer = wg_peer_create(wg, public_key, preshared_key);
+#endif /* SUPPORTS_PQC */
+#if defined SUPPORTS_PQC && defined SUPPORTS_CURVE
+        }
+#endif
 		if (IS_ERR(peer)) {
 			ret = PTR_ERR(peer);
 			peer = NULL;
@@ -539,6 +634,7 @@ static int wg_set_device(struct sk_buff *skb, struct genl_info *info)
 	if (flags & WGDEVICE_F_REPLACE_PEERS)
 		wg_peer_remove_all(wg);
 
+#ifdef SUPPORTS_CURVE
 	if (info->attrs[WGDEVICE_A_PRIVATE_KEY] &&
 	    nla_len(info->attrs[WGDEVICE_A_PRIVATE_KEY]) ==
 		    NOISE_PUBLIC_KEY_LEN) {
@@ -567,12 +663,55 @@ static int wg_set_device(struct sk_buff *skb, struct genl_info *info)
 							 private_key);
 		list_for_each_entry_safe(peer, temp, &wg->peer_list,
 					 peer_list) {
-			wg_noise_precompute_static_static(peer);
+#ifdef SUPPORTS_PQC
+            if(!peer->handshake.supports_pq)
+#endif /* SUPPORTS_PQC */
+                wg_noise_precompute_static_static(peer);
 			wg_noise_expire_current_peer_keypairs(peer);
 		}
 		wg_cookie_checker_precompute_device_keys(&wg->cookie_checker);
 		up_write(&wg->static_identity.lock);
 	}
+#endif /* SUPPORTS_CURVE */
+#ifdef SUPPORTS_PQC
+    if ((info->attrs[WGDEVICE_A_PQ_SECRET_KEY] &&
+        nla_len(info->attrs[WGDEVICE_A_PQ_SECRET_KEY]) ==
+        NOISE_PQ_SECRET_KEY_LEN) &&
+        info->attrs[WGDEVICE_A_PQ_SECRET_KEY_PATH]) {
+        u8 *sk = nla_data(info->attrs[WGDEVICE_A_PQ_SECRET_KEY]);
+        char *sk_path = nla_data(info->attrs[WGDEVICE_A_PQ_SECRET_KEY_PATH]);
+        u8 pk[NOISE_PQ_PUBLIC_KEY_LEN];
+        u8 pk_hash[NOISE_PQ_PUBLIC_KEY_HASH_LEN];
+        struct wg_peer *peer, *temp;
+
+        // Check if sk is different from current one
+        if (!crypto_memneq(wg->pq_static_identity.sk,
+                           sk, NOISE_PQ_SECRET_KEY_LEN))
+            goto skip_set_private_key;
+
+        // Override pk and pk_hash with new ones
+        memcpy(pk, sk + KYBER_INDCPA_SECRETKEYBYTES, NOISE_PQ_PUBLIC_KEY_LEN);
+
+        sha3_256(pk_hash, pk, NOISE_PQ_PUBLIC_KEY_LEN);
+
+        peer = wg_pubkey_hashtable_lookup(wg->peer_hashtable,
+                                          pk_hash);
+
+        if (peer) {
+            wg_peer_put(peer);
+            wg_peer_remove(peer);
+        }
+
+        down_write(&wg->pq_static_identity.lock);
+        wg_noise_set_pq_static_identity_sk(&wg->pq_static_identity, sk, sk_path);
+        list_for_each_entry_safe(peer, temp, &wg->peer_list,
+                                 peer_list) {
+            wg_noise_expire_current_peer_keypairs(peer);
+        }
+        wg_cookie_checker_precompute_pq_device_keys(&wg->cookie_pq_checker);
+        up_write(&wg->pq_static_identity.lock);
+    }
+#endif /* SUPPORTS_PQC */
 skip_set_private_key:
 
 	if (info->attrs[WGDEVICE_A_PEERS]) {

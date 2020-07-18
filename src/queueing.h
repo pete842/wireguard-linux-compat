@@ -37,10 +37,20 @@ void wg_packet_decrypt_worker(struct work_struct *work);
 /* send.c APIs: */
 void wg_packet_send_queued_handshake_initiation(struct wg_peer *peer,
 						bool is_retry);
+#ifdef SUPPORTS_CURVE
 void wg_packet_send_handshake_response(struct wg_peer *peer);
 void wg_packet_send_handshake_cookie(struct wg_device *wg,
 				     struct sk_buff *initiating_skb,
 				     __le32 sender_index);
+#endif /* SUPPORTS_CURVE */
+#ifdef SUPPORTS_PQC
+void wg_packet_send_pq_handshake_response(struct wg_peer *peer);
+void wg_packet_send_pq_handshake_cookie(struct wg_device *wg,
+				     struct sk_buff *initiating_skb,
+				     __le32 sender_index);
+#endif /* SUPPORTS_PQC */
+
+
 void wg_packet_send_keepalive(struct wg_peer *peer);
 void wg_packet_purge_staged_packets(struct wg_peer *peer);
 void wg_packet_send_staged_packets(struct wg_peer *peer);

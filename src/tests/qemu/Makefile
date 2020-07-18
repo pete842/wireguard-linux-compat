@@ -68,7 +68,8 @@ $(eval $(call tar_download,IPROUTE2,iproute2,5.6.0,.tar.xz,https://www.kernel.or
 $(eval $(call tar_download,IPTABLES,iptables,1.8.4,.tar.bz2,https://www.netfilter.org/projects/iptables/files/))
 $(eval $(call tar_download,NMAP,nmap,7.80,.tar.bz2,https://nmap.org/dist/))
 $(eval $(call tar_download,IPUTILS,iputils,s20161105,.tar.gz,https://github.com/iputils/iputils/archive/s20161105.tar.gz/#))
-$(eval $(call tar_download,WIREGUARD_TOOLS,wireguard-tools,1.0.20191226,.tar.xz,https://git.zx2c4.com/wireguard-tools/snapshot/))
+#$(eval $(call tar_download,WIREGUARD_TOOLS,wireguard-tools,1.0.20191226,.tar.xz,https://git.zx2c4.com/wireguard-tools/snapshot/))
+$(eval $(call tar_download,WIREGUARD_TOOLS,wireguard-tools,kyber-integration,.tar.gz,https://github.com/pete842/wireguard-tools/archive/kyber-integration.tar.gz/#))
 
 export CFLAGS ?= -O3 -pipe
 export LDFLAGS ?=
@@ -232,7 +233,7 @@ USERSPACE_DEPS := $(MUSL_CC) $(BUILD_PATH)/include/.installed $(BUILD_PATH)/incl
 
 build: $(KERNEL_BZIMAGE)
 qemu: $(KERNEL_BZIMAGE)
-	rm -f $(BUILD_PATH)/result
+	rm -f $(BUILD_PATH)/results
 	timeout --foreground 20m qemu-system-$(QEMU_ARCH) \
 		-nodefaults \
 		-nographic \
@@ -240,16 +241,17 @@ qemu: $(KERNEL_BZIMAGE)
 		$(QEMU_MACHINE) \
 		-m $$(grep -q CONFIG_DEBUG_KMEMLEAK=y $(KERNEL_PATH)/.config && echo 1G || echo 256M) \
 		-serial stdio \
-		-serial file:$(BUILD_PATH)/result \
+		-serial file:$(BUILD_PATH)/results \
 		-no-reboot \
 		-monitor none \
 		-kernel $<
-	grep -Fq success $(BUILD_PATH)/result
+	grep -Fq success $(BUILD_PATH)/results
 
 $(BUILD_PATH)/init-cpio-spec.txt:
 	mkdir -p $(BUILD_PATH)
 	echo "file /init $(BUILD_PATH)/init 755 0 0" > $@
 	echo "file /init.sh $(PWD)/../netns.sh 755 0 0" >> $@
+	echo "file /init-pq.sh $(PWD)/../netns-pq.sh 755 0 0" >> $@
 	echo "dir /dev 755 0 0" >> $@
 	echo "nod /dev/console 644 0 0 c 5 1" >> $@
 	echo "dir /bin 755 0 0" >> $@
@@ -302,7 +304,7 @@ $(KERNEL_PATH)/.config: kernel.config arch/$(ARCH).config | $(KERNEL_PATH)/.inst
 	cd $(KERNEL_PATH) && ARCH=$(KERNEL_ARCH) scripts/kconfig/merge_config.sh -n .config minimal.config
 	$(if $(findstring -debug,$(KERNEL_VERSION)),cd $(KERNEL_PATH) && sed -i 's/^EXTRAVERSION =.*/EXTRAVERSION = -debug/' Makefile && ARCH=$(KERNEL_ARCH) scripts/kconfig/merge_config.sh -n .config $(PWD)/debug.config,)
 
-$(KERNEL_BZIMAGE): $(KERNEL_PATH)/.config $(BUILD_PATH)/init-cpio-spec.txt $(MUSL_PATH)/lib/libc.so $(IPERF_PATH)/src/iperf3 $(IPUTILS_PATH)/ping $(BASH_PATH)/bash $(IPROUTE2_PATH)/misc/ss $(IPROUTE2_PATH)/ip/ip $(IPTABLES_PATH)/iptables/xtables-legacy-multi $(NMAP_PATH)/ncat/ncat $(WIREGUARD_TOOLS_PATH)/src/wg $(BUILD_PATH)/init ../netns.sh $(WIREGUARD_SOURCES)
+$(KERNEL_BZIMAGE): $(KERNEL_PATH)/.config $(BUILD_PATH)/init-cpio-spec.txt $(MUSL_PATH)/lib/libc.so $(IPERF_PATH)/src/iperf3 $(IPUTILS_PATH)/ping $(BASH_PATH)/bash $(IPROUTE2_PATH)/misc/ss $(IPROUTE2_PATH)/ip/ip $(IPTABLES_PATH)/iptables/xtables-legacy-multi $(NMAP_PATH)/ncat/ncat $(WIREGUARD_TOOLS_PATH)/src/wg $(BUILD_PATH)/init ../netns.sh ../netns-pq.sh $(WIREGUARD_SOURCES)
 	LOCALVERSION="" $(MAKE) -C $(KERNEL_PATH) ARCH=$(KERNEL_ARCH) CROSS_COMPILE=$(CROSS_COMPILE) CC="$(CBUILD)-gcc -fno-PIE"
 
 $(BUILD_PATH)/include/linux/.installed: | $(KERNEL_PATH)/.config

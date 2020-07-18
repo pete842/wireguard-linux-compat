@@ -26,6 +26,11 @@
 #include <linux/random.h>
 #include <linux/version.h>
 
+enum crypto_type{
+    CURVE,
+    PQC
+};
+
 __attribute__((noreturn)) static void poweroff(void)
 {
 	fflush(stdout);
@@ -167,18 +172,24 @@ static void kmod_selftests(void)
 	}
 }
 
-static void launch_tests(void)
+static void launch_tests(enum crypto_type type)
 {
 	char cmdline[4096], *success_dev;
 	int status, fd;
 	pid_t pid;
 
-	pretty_message("[+] Launching tests...");
+	if(type == PQC)
+        pretty_message("[+] Launching PQ tests...");
+    else
+	    pretty_message("[+] Launching tests...");
 	pid = fork();
 	if (pid == -1)
 		panic("fork");
 	else if (pid == 0) {
-		execl("/init.sh", "init", NULL);
+        if(type == PQC)
+	        execl("/init-pq.sh", "init-pq", NULL);
+	    else
+	        execl("/init.sh", "init", NULL);
 		panic("exec");
 	}
 	if (waitpid(pid, &status, 0) < 0)
@@ -204,7 +215,7 @@ static void launch_tests(void)
 		fd = open(success_dev, O_WRONLY);
 		if (fd < 0)
 			panic("open(success_dev)");
-		if (write(fd, "success\n", 8) != 8)
+		if (write(fd, type == PQC ? "success Kyber\n" : "success Curve\n", 14) != 14)
 			panic("write(success_dev)");
 		close(fd);
 	} else {
@@ -281,7 +292,8 @@ int main(int argc, char *argv[])
 	kmod_selftests();
 	enable_logging();
 	clear_leaks();
-	launch_tests();
+	launch_tests(PQC);
+    launch_tests(CURVE);
 	check_leaks();
 	poweroff();
 	return 1;

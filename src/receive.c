@@ -40,6 +40,7 @@ static size_t validate_header_len(struct sk_buff *skb)
 	if (SKB_TYPE_LE32(skb) == cpu_to_le32(MESSAGE_DATA) &&
 	    skb->len >= MESSAGE_MINIMUM_LENGTH)
 		return sizeof(struct message_data);
+#ifdef SUPPORTS_CURVE
 	if (SKB_TYPE_LE32(skb) == cpu_to_le32(MESSAGE_HANDSHAKE_INITIATION) &&
 	    skb->len == sizeof(struct message_handshake_initiation))
 		return sizeof(struct message_handshake_initiation);
@@ -49,7 +50,19 @@ static size_t validate_header_len(struct sk_buff *skb)
 	if (SKB_TYPE_LE32(skb) == cpu_to_le32(MESSAGE_HANDSHAKE_COOKIE) &&
 	    skb->len == sizeof(struct message_handshake_cookie))
 		return sizeof(struct message_handshake_cookie);
-	return 0;
+#endif /* SUPPORTS_CURVE */
+#ifdef SUPPORTS_PQC
+    if (SKB_TYPE_LE32(skb) == cpu_to_le32(MESSAGE_PQ_HANDSHAKE_INITIATION) &&
+        skb->len == sizeof(struct message_pq_handshake_initiation))
+        return sizeof(struct message_pq_handshake_initiation);
+    if (SKB_TYPE_LE32(skb) == cpu_to_le32(MESSAGE_PQ_HANDSHAKE_RESPONSE) &&
+        skb->len == sizeof(struct message_pq_handshake_response))
+        return sizeof(struct message_pq_handshake_response);
+    if (SKB_TYPE_LE32(skb) == cpu_to_le32(MESSAGE_PQ_HANDSHAKE_COOKIE) &&
+        skb->len == sizeof(struct message_handshake_cookie))
+        return sizeof(struct message_handshake_cookie);
+#endif /* SUPPORTS_PQC */
+    return 0;
 }
 
 static int prepare_skb_header(struct sk_buff *skb, struct wg_device *wg)
@@ -109,6 +122,16 @@ static void wg_receive_handshake_packet(struct wg_device *wg,
 	bool packet_needs_cookie;
 	bool under_load;
 
+#ifdef SUPPORTS_PQC
+	if (SKB_TYPE_LE32(skb) == cpu_to_le32(MESSAGE_PQ_HANDSHAKE_COOKIE)) {
+        net_dbg_skb_ratelimited("%s: Receiving PQ cookie response from %pISpfsc\n",
+                                wg->dev->name, skb);
+        wg_cookie_message_consume(
+                (struct message_handshake_cookie *)skb->data, wg);
+        return;
+    }
+#endif /* SUPPORTS_PQC */
+#ifdef SUPPORTS_CURVE
 	if (SKB_TYPE_LE32(skb) == cpu_to_le32(MESSAGE_HANDSHAKE_COOKIE)) {
 		net_dbg_skb_ratelimited("%s: Receiving cookie response from %pISpfsc\n",
 					wg->dev->name, skb);
@@ -116,6 +139,7 @@ static void wg_receive_handshake_packet(struct wg_device *wg,
 			(struct message_handshake_cookie *)skb->data, wg);
 		return;
 	}
+#endif /* SUPPORTS_CURVE */
 
 	under_load = skb_queue_len(&wg->incoming_handshakes) >=
 		     MAX_QUEUED_INCOMING_HANDSHAKES / 8;
@@ -126,8 +150,16 @@ static void wg_receive_handshake_packet(struct wg_device *wg,
 		if (!under_load)
 			last_under_load = 0;
 	}
-	mac_state = wg_cookie_validate_packet(&wg->cookie_checker, skb,
-					      under_load);
+
+#if defined SUPPORTS_PQC && defined SUPPORTS_CURVE
+    mac_state = wg_cookie_validate_packet(SKB_TYPE_LE32(skb) >= _MESSAGE_PQ_BORDER ?
+            &wg->cookie_pq_checker : &wg->cookie_checker, skb, under_load);
+#elif defined SUPPORTS_PQC
+    mac_state = wg_cookie_validate_packet(&wg->cookie_pq_checker, skb, under_load);
+#else
+    mac_state = wg_cookie_validate_packet(&wg->cookie_checker, skb, under_load);
+#endif
+
 	if ((under_load && mac_state == VALID_MAC_WITH_COOKIE) ||
 	    (!under_load && mac_state == VALID_MAC_BUT_NO_COOKIE)) {
 		packet_needs_cookie = false;
@@ -140,6 +172,7 @@ static void wg_receive_handshake_packet(struct wg_device *wg,
 	}
 
 	switch (SKB_TYPE_LE32(skb)) {
+#ifdef SUPPORTS_CURVE
 	case cpu_to_le32(MESSAGE_HANDSHAKE_INITIATION): {
 		struct message_handshake_initiation *message =
 			(struct message_handshake_initiation *)skb->data;
@@ -195,6 +228,63 @@ static void wg_receive_handshake_packet(struct wg_device *wg,
 		}
 		break;
 	}
+#endif /* SUPPORTS_CURVE */
+#ifdef SUPPORTS_PQC
+    case cpu_to_le32(MESSAGE_PQ_HANDSHAKE_INITIATION): {
+        struct message_pq_handshake_initiation *message =
+                (struct message_pq_handshake_initiation *)skb->data;
+
+        if (packet_needs_cookie) {
+            wg_packet_send_pq_handshake_cookie(wg, skb, message->sender_index);
+            return;
+        }
+        peer = wg_noise_pq_handshake_consume_initiation(message, wg);
+        if (unlikely(!peer)) {
+            net_dbg_skb_ratelimited("%s: Invalid pq handshake initiation from %pISpfsc\n",
+                                    wg->dev->name, skb);
+            return;
+        }
+        wg_socket_set_peer_endpoint_from_skb(peer, skb);
+        net_dbg_ratelimited("%s: Receiving pq handshake initiation from peer %llu (%pISpfsc)\n",
+                            wg->dev->name, peer->internal_id,
+                            &peer->endpoint.addr);
+        wg_packet_send_pq_handshake_response(peer);
+        break;
+    }
+	case cpu_to_le32(MESSAGE_PQ_HANDSHAKE_RESPONSE): {
+        struct message_pq_handshake_response *message =
+                (struct message_pq_handshake_response *)skb->data;
+
+        if (packet_needs_cookie) {
+            wg_packet_send_pq_handshake_cookie(wg, skb,
+                                            message->sender_index);
+            return;
+        }
+        peer = wg_noise_pq_handshake_consume_response(message, wg);
+        if (unlikely(!peer)) {
+            net_dbg_skb_ratelimited("%s: Invalid pq handshake response from %pISpfsc\n",
+                                    wg->dev->name, skb);
+            return;
+        }
+        wg_socket_set_peer_endpoint_from_skb(peer, skb);
+        net_dbg_ratelimited("%s: Receiving pq handshake response from peer %llu (%pISpfsc)\n",
+                            wg->dev->name, peer->internal_id,
+                            &peer->endpoint.addr);
+        if (wg_noise_handshake_begin_session(&peer->handshake,
+                                             &peer->keypairs)) {
+            wg_timers_session_derived(peer);
+            wg_timers_handshake_complete(peer);
+            /* Calling this function will either send any existing
+             * packets in the queue and not send a keepalive, which
+             * is the best case, Or, if there's nothing in the
+             * queue, it will send a keepalive, in order to give
+             * immediate confirmation of the session.
+             */
+            wg_packet_send_keepalive(peer);
+        }
+        break;
+    }
+#endif /* SUPPORTS_PQC */
 	}
 
 	if (unlikely(!peer)) {
@@ -563,10 +653,18 @@ void wg_packet_receive(struct wg_device *wg, struct sk_buff *skb)
 	if (unlikely(prepare_skb_header(skb, wg) < 0))
 		goto err;
 	switch (SKB_TYPE_LE32(skb)) {
+#ifdef SUPPORTS_CURVE
 	case cpu_to_le32(MESSAGE_HANDSHAKE_INITIATION):
 	case cpu_to_le32(MESSAGE_HANDSHAKE_RESPONSE):
-	case cpu_to_le32(MESSAGE_HANDSHAKE_COOKIE): {
-		int cpu;
+	case cpu_to_le32(MESSAGE_HANDSHAKE_COOKIE):
+#endif /* SUPPORTS_CURVE */
+#ifdef SUPPORTS_PQC
+    case cpu_to_le32(MESSAGE_PQ_HANDSHAKE_INITIATION):
+    case cpu_to_le32(MESSAGE_PQ_HANDSHAKE_RESPONSE):
+    case cpu_to_le32(MESSAGE_PQ_HANDSHAKE_COOKIE):
+#endif /* SUPPORTS_PQC */
+    {
+        int cpu;
 
 		if (skb_queue_len(&wg->incoming_handshakes) >
 			    MAX_QUEUED_INCOMING_HANDSHAKES ||

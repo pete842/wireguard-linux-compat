@@ -11,6 +11,9 @@
 #include "netlink.h"
 #include "uapi/wireguard.h"
 #include "crypto/zinc.h"
+#ifdef SUPPORTS_PQC
+#include <kyber/api.h>
+#endif /* SUPPORTS_PQC */
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -21,9 +24,16 @@ static int __init mod_init(void)
 {
 	int ret;
 
-	if ((ret = chacha20_mod_init()) || (ret = poly1305_mod_init()) ||
-	    (ret = chacha20poly1305_mod_init()) || (ret = blake2s_mod_init()) ||
-	    (ret = curve25519_mod_init()))
+	if ((ret = chacha20_mod_init()) ||
+	    (ret = poly1305_mod_init()) ||
+	    (ret = chacha20poly1305_mod_init()) ||
+#ifdef SUPPORTS_CURVE
+        (ret = curve25519_mod_init()) ||
+#endif
+#ifdef SUPPORTS_PQC
+        (ret = kyber_mod_init()) ||
+#endif
+        (ret = blake2s_mod_init()))
 		return ret;
 
 #ifdef DEBUG
@@ -41,7 +51,17 @@ static int __init mod_init(void)
 	if (ret < 0)
 		goto err_netlink;
 
-	pr_info("WireGuard " WIREGUARD_VERSION " loaded. See www.wireguard.com for information.\n");
+	pr_info("WireGuard " WIREGUARD_VERSION " loaded (with "
+#ifdef SUPPORTS_PQC
+            PQCRYPTO_ALGNAME
+#endif /* SUPPORTS_PQC */
+#if defined SUPPORTS_PQC && defined SUPPORTS_CURVE
+            " and "
+#endif /* SUPPORTS_PQC && SUPPORTS_CURVE */
+#ifdef SUPPORTS_CURVE
+            "Curve25519"
+#endif /* SUPPORTS_CURVE */
+            " support). See www.wireguard.com for information.\n");
 	pr_info("Copyright (C) 2015-2019 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.\n");
 
 	return 0;

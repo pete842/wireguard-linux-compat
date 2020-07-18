@@ -29,6 +29,7 @@ enum { COOKIE_KEY_LABEL_LEN = 8 };
 static const u8 mac1_key_label[COOKIE_KEY_LABEL_LEN] = "mac1----";
 static const u8 cookie_key_label[COOKIE_KEY_LABEL_LEN] = "cookie--";
 
+#ifdef SUPPORTS_CURVE
 static void precompute_key(u8 key[NOISE_SYMMETRIC_KEY_LEN],
 			   const u8 pubkey[NOISE_PUBLIC_KEY_LEN],
 			   const u8 label[COOKIE_KEY_LABEL_LEN])
@@ -65,6 +66,7 @@ void wg_cookie_checker_precompute_peer_keys(struct wg_peer *peer)
 	precompute_key(peer->latest_cookie.message_mac1_key,
 		       peer->handshake.remote_static, mac1_key_label);
 }
+#endif /* SUPPORTS_CURVE */
 
 void wg_cookie_init(struct cookie *cookie)
 {
@@ -177,6 +179,7 @@ void wg_cookie_add_mac_to_packet(void *message, size_t len,
 	up_read(&peer->latest_cookie.lock);
 }
 
+#ifdef SUPPORTS_CURVE
 void wg_cookie_message_create(struct message_handshake_cookie *dst,
 			      struct sk_buff *skb, __le32 index,
 			      struct cookie_checker *checker)
@@ -194,6 +197,7 @@ void wg_cookie_message_create(struct message_handshake_cookie *dst,
 				  macs->mac1, COOKIE_LEN, dst->nonce,
 				  checker->cookie_encryption_key);
 }
+#endif /* SUPPORTS_CURVE */
 
 void wg_cookie_message_consume(struct message_handshake_cookie *src,
 			       struct wg_device *wg)
@@ -234,3 +238,61 @@ void wg_cookie_message_consume(struct message_handshake_cookie *src,
 out:
 	wg_peer_put(peer);
 }
+
+#ifdef SUPPORTS_PQC
+static void precompute_pq_key(u8 key[NOISE_SYMMETRIC_KEY_LEN],
+                              const u8 pubkey[NOISE_PQ_PUBLIC_KEY_LEN],
+                              const u8 label[COOKIE_KEY_LABEL_LEN])
+{
+    struct blake2s_state blake;
+
+    blake2s_init(&blake, NOISE_SYMMETRIC_KEY_LEN);
+    blake2s_update(&blake, label, COOKIE_KEY_LABEL_LEN);
+    blake2s_update(&blake, pubkey, NOISE_PQ_PUBLIC_KEY_LEN);
+    blake2s_final(&blake, key);
+}
+
+
+void wg_pq_cookie_message_create(struct message_handshake_cookie *dst,
+                                 struct sk_buff *skb, __le32 index,
+                                 struct cookie_checker *checker)
+{
+    struct message_macs *macs = (struct message_macs *)
+            ((u8 *)skb->data + skb->len - sizeof(*macs));
+    u8 cookie[COOKIE_LEN];
+
+    dst->header.type = cpu_to_le32(MESSAGE_PQ_HANDSHAKE_COOKIE);
+    dst->receiver_index = index;
+    get_random_bytes_wait(dst->nonce, COOKIE_NONCE_LEN);
+
+    make_cookie(cookie, skb, checker);
+    xchacha20poly1305_encrypt(dst->encrypted_cookie, cookie, COOKIE_LEN,
+                              macs->mac1, COOKIE_LEN, dst->nonce,
+                              checker->cookie_encryption_key);
+}
+
+/* Must hold peer->handshake.pq_static_identity->lock */
+void wg_cookie_checker_precompute_pq_device_keys(struct cookie_checker *checker)
+{
+    if (likely(checker->device->pq_static_identity.has_identity)) {
+        precompute_pq_key(checker->cookie_encryption_key,
+                          checker->device->pq_static_identity.pk,
+                          cookie_key_label);
+        precompute_pq_key(checker->message_mac1_key,
+                          checker->device->pq_static_identity.pk,
+                          mac1_key_label);
+    } else {
+        memset(checker->cookie_encryption_key, 0,
+               NOISE_SYMMETRIC_KEY_LEN);
+        memset(checker->message_mac1_key, 0, NOISE_SYMMETRIC_KEY_LEN);
+    }
+}
+
+void wg_cookie_checker_precompute_pq_peer_keys(struct wg_peer *peer)
+{
+    precompute_pq_key(peer->latest_cookie.cookie_decryption_key,
+                      peer->handshake.pq_remote_pk, cookie_key_label);
+    precompute_pq_key(peer->latest_cookie.message_mac1_key,
+                      peer->handshake.pq_remote_pk, mac1_key_label);
+}
+#endif /* SUPPORTS_PQC */

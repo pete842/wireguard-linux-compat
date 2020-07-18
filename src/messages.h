@@ -6,13 +6,22 @@
 #ifndef _WG_MESSAGES_H
 #define _WG_MESSAGES_H
 
+#ifdef SUPPORTS_CURVE
 #include <zinc/curve25519.h>
+#endif /* SUPPORTS_CURVE */
 #include <zinc/chacha20poly1305.h>
 #include <zinc/blake2s.h>
+#ifdef SUPPORTS_PQC
+#include <kyber/params.h>
+#endif /* SUPPORTS_PQC */
 
 #include <linux/kernel.h>
 #include <linux/param.h>
 #include <linux/skbuff.h>
+
+#ifndef CURVE25519_KEY_SIZE
+#define CURVE25519_KEY_SIZE 32
+#endif
 
 enum noise_lengths {
 	NOISE_PUBLIC_KEY_LEN = CURVE25519_KEY_SIZE,
@@ -21,6 +30,18 @@ enum noise_lengths {
 	NOISE_AUTHTAG_LEN = CHACHA20POLY1305_AUTHTAG_SIZE,
 	NOISE_HASH_LEN = BLAKE2S_HASH_SIZE
 };
+
+#ifdef SUPPORTS_PQC
+enum noise_pq_lengths {
+	NOISE_PQ_SECRET_KEY_LEN = KYBER_SECRETKEYBYTES,
+	NOISE_PQ_PUBLIC_KEY_LEN = KYBER_PUBLICKEYBYTES,
+	NOISE_PQ_CIPHERTEXT_LEN = KYBER_CIPHERTEXTBYTES,
+	NOISE_PQ_EPHEMERAL_PUBLIC_KEY_LEN = KYBER_PUBLICKEYBYTES,
+	NOISE_PQ_EPHEMERAL_SECRET_KEY_LEN = KYBER_SECRETKEYBYTES,
+	NOISE_PQ_EPHEMERAL_CIPHERTEXT_LEN = KYBER_CIPHERTEXTBYTES,
+	NOISE_PQ_PUBLIC_KEY_HASH_LEN = NOISE_PUBLIC_KEY_LEN // needs to be the same as the public key (32B)
+};
+#endif /* SUPPORTS_PQC */
 
 #define noise_encrypted_len(plain_len) ((plain_len) + NOISE_AUTHTAG_LEN)
 
@@ -53,12 +74,23 @@ enum limits {
 	MAX_QUEUED_PACKETS = 1024 /* TODO: replace this with DQL */
 };
 
+/*
+ *  0-4 remain unchanged for retro compatibility
+ */
 enum message_type {
 	MESSAGE_INVALID = 0,
-	MESSAGE_HANDSHAKE_INITIATION = 1,
-	MESSAGE_HANDSHAKE_RESPONSE = 2,
-	MESSAGE_HANDSHAKE_COOKIE = 3,
-	MESSAGE_DATA = 4
+#ifdef SUPPORTS_CURVE
+    MESSAGE_HANDSHAKE_INITIATION = 1,
+    MESSAGE_HANDSHAKE_RESPONSE = 2,
+    MESSAGE_HANDSHAKE_COOKIE = 3,
+#endif /* SUPPORTS_CURVE */
+    MESSAGE_DATA = 4,
+    _MESSAGE_PQ_BORDER = 5, // will exists in any version
+#ifdef SUPPORTS_PQC
+    MESSAGE_PQ_HANDSHAKE_INITIATION = 5,
+    MESSAGE_PQ_HANDSHAKE_RESPONSE = 6,
+    MESSAGE_PQ_HANDSHAKE_COOKIE = 7,
+#endif /* SUPPORTS_PQC */
 };
 
 struct message_header {
@@ -77,6 +109,7 @@ struct message_macs {
 	u8 mac2[COOKIE_LEN];
 };
 
+#ifdef SUPPORTS_CURVE
 struct message_handshake_initiation {
 	struct message_header header;
 	__le32 sender_index;
@@ -94,6 +127,7 @@ struct message_handshake_response {
 	u8 encrypted_nothing[noise_encrypted_len(0)];
 	struct message_macs macs;
 };
+#endif /* SUPPORTS_CURVE */
 
 struct message_handshake_cookie {
 	struct message_header header;
@@ -125,4 +159,25 @@ enum message_alignments {
 
 enum { HANDSHAKE_DSCP = 0x88 /* AF41, plus 00 ECN */ };
 
+#ifdef SUPPORTS_PQC
+struct message_pq_handshake_initiation {
+	struct message_header header;
+	__le32 sender_index;
+	u8 ciphertext[NOISE_PQ_CIPHERTEXT_LEN];
+	u8 ephemeral_public[NOISE_PQ_EPHEMERAL_PUBLIC_KEY_LEN];
+	u8 encrypted_static[noise_encrypted_len(NOISE_PQ_PUBLIC_KEY_HASH_LEN)];
+	u8 encrypted_timestamp[noise_encrypted_len(NOISE_TIMESTAMP_LEN)];
+	struct message_macs macs;
+};
+
+struct message_pq_handshake_response {
+	struct message_header header;
+	__le32 sender_index;
+	__le32 receiver_index;
+	u8 ciphertext[NOISE_PQ_CIPHERTEXT_LEN];
+	u8 ephemeral_ciphertext[NOISE_PQ_EPHEMERAL_CIPHERTEXT_LEN];
+	u8 encrypted_nothing[noise_encrypted_len(0)];
+	struct message_macs macs;
+};
+#endif /* SUPPORTS_PQC */
 #endif /* _WG_MESSAGES_H */

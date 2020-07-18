@@ -66,9 +66,18 @@ struct wg_peer {
 	bool is_dead;
 };
 
+#ifdef SUPPORTS_CURVE
 struct wg_peer *wg_peer_create(struct wg_device *wg,
 			       const u8 public_key[NOISE_PUBLIC_KEY_LEN],
 			       const u8 preshared_key[NOISE_SYMMETRIC_KEY_LEN]);
+#endif /* SUPPORTS_CURVE */
+#ifdef SUPPORTS_PQC
+struct wg_peer *wg_peer_create_pq(struct wg_device *wg,
+                                  const u8 pq_pk[NOISE_PQ_PUBLIC_KEY_LEN],
+                                  const u8 pq_pk_hash[NOISE_PQ_PUBLIC_KEY_HASH_LEN],
+                                  const char pq_pk_path[256],
+                                  const u8 preshared_key[NOISE_SYMMETRIC_KEY_LEN]);
+#endif /* SUPPORTS_PQC */
 
 struct wg_peer *__must_check wg_peer_get_maybe_zero(struct wg_peer *peer);
 static inline struct wg_peer *wg_peer_get(struct wg_peer *peer)

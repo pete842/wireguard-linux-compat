@@ -7,7 +7,7 @@ KERNELDIR ?= /lib/modules/$(KERNELRELEASE)/build
 PREFIX ?= /usr
 DESTDIR ?=
 SRCDIR ?= $(PREFIX)/src
-DKMSDIR ?= $(SRCDIR)/wireguard
+DKMSDIR ?= $(SRCDIR)/wireguard-1.0.20200712-fork-pqc
 DEPMOD ?= depmod
 
 PWD := $(shell pwd)
@@ -15,23 +15,41 @@ PWD := $(shell pwd)
 all: module
 debug: module-debug
 
+ifeq (nn,$(CONFIG_SUPPORTS_PQC)$(CONFIG_SUPPORTS_CURVE))
+$(error You need to support at least one encryption method. (CONFIG_SUPPORTS_PQC=y | CONFIG_SUPPORTS_CURVE=y)")
+endif
+CONFIG_SUPPORTS_PQC?=y
+CONFIG_SUPPORTS_CURVE?=y
+
+FORK_MARK := -fork
+ifeq (y,$(CONFIG_SUPPORTS_PQC))
+FORK_MARK:=$(FORK_MARK)-pqc
+else
+$(info  Compiling without Kyber1024 support...)
+endif
+ifeq (y,$(CONFIG_SUPPORTS_CURVE))
+FORK_MARK:=$(FORK_MARK)-25519
+else
+$(info  Compiling without Curve25519 support...)
+endif
+
+WIREGUARD_VERSION = $(patsubst v%,%,$(shell GIT_CEILING_DIRECTORIES="$(PWD)/../.." git describe --dirty 2>/dev/null)$(FORK_MARK))
+
 ifneq ($(V),1)
 MAKEFLAGS += --no-print-directory
 endif
 
-WIREGUARD_VERSION = $(patsubst v%,%,$(shell GIT_CEILING_DIRECTORIES="$(PWD)/../.." git describe --dirty 2>/dev/null))
-
 module:
-	@$(MAKE) -C $(KERNELDIR) M=$(PWD) WIREGUARD_VERSION="$(WIREGUARD_VERSION)" modules
+	@$(MAKE) -C $(KERNELDIR) M=$(PWD) CONFIG_SUPPORTS_PQC=$(CONFIG_SUPPORTS_PQC) CONFIG_SUPPORTS_CURVE=$(CONFIG_SUPPORTS_CURVE) WIREGUARD_VERSION="$(WIREGUARD_VERSION)" modules
 
 module-debug:
-	@$(MAKE) -C $(KERNELDIR) M=$(PWD) V=1 CONFIG_WIREGUARD_DEBUG=y WIREGUARD_VERSION="$(WIREGUARD_VERSION)" modules
+	@$(MAKE) -C $(KERNELDIR) M=$(PWD) V=1 CONFIG_SUPPORTS_PQC=$(CONFIG_SUPPORTS_PQC) CONFIG_SUPPORTS_CURVE=$(CONFIG_SUPPORTS_CURVE) CONFIG_WIREGUARD_DEBUG=y WIREGUARD_VERSION="$(WIREGUARD_VERSION)" modules
 
 clean:
 	@$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
 
 module-install:
-	@$(MAKE) -C $(KERNELDIR) M=$(PWD) WIREGUARD_VERSION="$(WIREGUARD_VERSION)" modules_install
+	@$(MAKE) -C $(KERNELDIR) M=$(PWD) CONFIG_SUPPORTS_PQC=$(CONFIG_SUPPORTS_PQC) CONFIG_SUPPORTS_CURVE=$(CONFIG_SUPPORTS_CURVE) WIREGUARD_VERSION="$(WIREGUARD_VERSION)" modules_install
 	$(DEPMOD) -a $(KERNELRELEASE)
 
 install: module-install

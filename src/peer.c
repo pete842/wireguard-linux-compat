@@ -14,9 +14,13 @@
 #include <linux/lockdep.h>
 #include <linux/rcupdate.h>
 #include <linux/list.h>
+#ifdef SUPPORTS_PQC
+#include <kyber/params.h>
+#endif /* SUPPORTS_PQC */
 
 static atomic64_t peer_counter = ATOMIC64_INIT(0);
 
+#ifdef SUPPORTS_CURVE
 struct wg_peer *wg_peer_create(struct wg_device *wg,
 			       const u8 public_key[NOISE_PUBLIC_KEY_LEN],
 			       const u8 preshared_key[NOISE_SYMMETRIC_KEY_LEN])
@@ -76,6 +80,73 @@ err_1:
 	kfree(peer);
 	return ERR_PTR(ret);
 }
+#endif /* SUPPORTS_CURVE */
+
+#ifdef SUPPORTS_PQC
+struct wg_peer *wg_peer_create_pq(struct wg_device *wg,
+                                  const u8 pq_pk[NOISE_PQ_PUBLIC_KEY_LEN],
+                                  const u8 pq_pk_hash[NOISE_PQ_PUBLIC_KEY_HASH_LEN],
+                                  const char pq_pk_path[256],
+                                  const u8 preshared_key[NOISE_SYMMETRIC_KEY_LEN])
+{
+    struct wg_peer *peer;
+    int ret = -ENOMEM;
+
+    lockdep_assert_held(&wg->device_update_lock);
+
+    if (wg->num_peers >= MAX_PEERS_PER_DEVICE)
+        return ERR_PTR(ret);
+
+    peer = kzalloc(sizeof(*peer), GFP_KERNEL);
+    if (unlikely(!peer))
+        return ERR_PTR(ret);
+    peer->device = wg;
+    wg_noise_pq_handshake_init(&peer->handshake, &wg->pq_static_identity,
+                               pq_pk, pq_pk_hash, pq_pk_path, preshared_key,
+                               peer);
+
+
+    if (dst_cache_init(&peer->endpoint_cache, GFP_KERNEL))
+        goto err_1;
+    if (wg_packet_queue_init(&peer->tx_queue, wg_packet_tx_worker, false,
+                             MAX_QUEUED_PACKETS))
+        goto err_2;
+    if (wg_packet_queue_init(&peer->rx_queue, NULL, false,
+                             MAX_QUEUED_PACKETS))
+        goto err_3;
+
+    peer->internal_id = atomic64_inc_return(&peer_counter);
+    peer->serial_work_cpu = nr_cpumask_bits;
+    wg_cookie_init(&peer->latest_cookie);
+    wg_timers_init(peer);
+    wg_cookie_checker_precompute_pq_peer_keys(peer);
+    spin_lock_init(&peer->keypairs.keypair_update_lock);
+    INIT_WORK(&peer->transmit_handshake_work,
+              wg_packet_handshake_send_worker);
+    rwlock_init(&peer->endpoint_lock);
+    kref_init(&peer->refcount);
+    skb_queue_head_init(&peer->staged_packet_queue);
+    wg_noise_reset_last_sent_handshake(&peer->last_sent_handshake);
+    set_bit(NAPI_STATE_NO_BUSY_POLL, &peer->napi.state);
+    netif_napi_add(wg->dev, &peer->napi, wg_packet_rx_poll,
+                   NAPI_POLL_WEIGHT);
+    napi_enable(&peer->napi);
+    list_add_tail(&peer->peer_list, &wg->peer_list);
+    INIT_LIST_HEAD(&peer->allowedips_list);
+    wg_pubkey_hashtable_add(wg->peer_hashtable, peer);
+    ++wg->num_peers;
+    pr_debug("%s: Peer %llu created\n", wg->dev->name, peer->internal_id);
+    return peer;
+
+    err_3:
+    wg_packet_queue_free(&peer->tx_queue, false);
+    err_2:
+    dst_cache_destroy(&peer->endpoint_cache);
+    err_1:
+    kfree(peer);
+    return ERR_PTR(ret);
+}
+#endif /* SUPPORTS_PQC */
 
 struct wg_peer *wg_peer_get_maybe_zero(struct wg_peer *peer)
 {

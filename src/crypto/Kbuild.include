@@ -13,6 +13,9 @@ endif
 ifeq ($(CONFIG_MIPS)$(CONFIG_64BIT),yy)
 CONFIG_ZINC_ARCH_MIPS64 := y
 endif
+ifeq ($(CONFIG_SUPPORTS_CURVE)$(CONFIG_ZINC_ARCH_ARM),yy)
+CONFIG_ZINC_ARCH_ARM_CURVE := y
+endif
 
 zinc-y += chacha20/chacha20.o
 zinc-$(CONFIG_ZINC_ARCH_X86_64) += chacha20/chacha20-x86_64.o
@@ -34,8 +37,10 @@ zinc-y += chacha20poly1305.o
 zinc-y += blake2s/blake2s.o
 zinc-$(CONFIG_ZINC_ARCH_X86_64) += blake2s/blake2s-x86_64.o
 
-zinc-y += curve25519/curve25519.o
-zinc-$(CONFIG_ZINC_ARCH_ARM) += curve25519/curve25519-arm.o
+zinc-$(CONFIG_SUPPORTS_CURVE) += curve25519/curve25519.o
+zinc-$(CONFIG_ZINC_ARCH_ARM_CURVE) += curve25519/curve25519-arm.o
+
+kyber-$(CONFIG_SUPPORTS_PQC) := $(patsubst $(kbuild-dir)/%.c,%.o,$(wildcard $(kbuild-dir)/crypto/kyber/ref/*.c))
 
 quiet_cmd_perlasm = PERLASM $@
       cmd_perlasm = $(PERL) $< > $@
@@ -47,7 +52,7 @@ targets := $(patsubst $(kbuild-dir)/%.pl,%.S,$(wildcard $(patsubst %.o,$(kbuild-
 # Old kernels don't set this, which causes trouble.
 .SECONDARY:
 
-wireguard-y += $(addprefix crypto/zinc/,$(zinc-y))
+wireguard-y += $(addprefix crypto/zinc/,$(zinc-y)) $(kyber-y)
 ccflags-y += -I$(kbuild-dir)/crypto/include
 ccflags-$(CONFIG_ZINC_ARCH_X86_64) += -DCONFIG_ZINC_ARCH_X86_64
 ccflags-$(CONFIG_ZINC_ARCH_ARM) += -DCONFIG_ZINC_ARCH_ARM

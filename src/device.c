@@ -246,7 +246,12 @@ static void wg_destruct(struct net_device *dev)
 	wg_packet_queue_free(&wg->encrypt_queue, true);
 	rcu_barrier(); /* Wait for all the peers to be actually freed. */
 	wg_ratelimiter_uninit();
-	memzero_explicit(&wg->static_identity, sizeof(wg->static_identity));
+#ifdef SUPPORTS_CURVE
+    memzero_explicit(&wg->static_identity, sizeof(wg->static_identity));
+#endif /* SUPPORTS_CURVE */
+#ifdef SUPPORTS_PQC
+    memzero_explicit(&wg->pq_static_identity, sizeof(wg->pq_static_identity));
+#endif /* SUPPORTS_PQC */
 	skb_queue_purge(&wg->incoming_handshakes);
 	free_percpu(dev->tstats);
 	free_percpu(wg->incoming_handshakes_worker);
@@ -308,12 +313,22 @@ static int wg_newlink(struct net *src_net, struct net_device *dev,
 	int ret = -ENOMEM;
 
 	rcu_assign_pointer(wg->creating_net, src_net);
+#ifdef SUPPORTS_CURVE
 	init_rwsem(&wg->static_identity.lock);
+#endif /* SUPPORTS_CURVE */
+#ifdef SUPPORTS_PQC
+    init_rwsem(&wg->pq_static_identity.lock);
+#endif /* SUPPORTS_PQC */
 	mutex_init(&wg->socket_update_lock);
 	mutex_init(&wg->device_update_lock);
 	skb_queue_head_init(&wg->incoming_handshakes);
 	wg_allowedips_init(&wg->peer_allowedips);
-	wg_cookie_checker_init(&wg->cookie_checker, wg);
+#ifdef SUPPORTS_CURVE
+    wg_cookie_checker_init(&wg->cookie_checker, wg);
+#endif /* SUPPORTS_CURVE */
+#ifdef SUPPORTS_PQC
+    wg_cookie_checker_init(&wg->cookie_pq_checker, wg);
+#endif /* SUPPORTS_PQC */
 	INIT_LIST_HEAD(&wg->peer_list);
 	wg->device_update_gen = 1;
 

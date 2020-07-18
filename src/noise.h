@@ -47,12 +47,26 @@ struct noise_keypairs {
 	spinlock_t keypair_update_lock;
 };
 
+#ifdef SUPPORTS_CURVE
 struct noise_static_identity {
 	u8 static_public[NOISE_PUBLIC_KEY_LEN];
 	u8 static_private[NOISE_PUBLIC_KEY_LEN];
 	struct rw_semaphore lock;
 	bool has_identity;
 };
+#endif /* SUPPORTS_CURVE */
+
+#ifdef SUPPORTS_PQC
+struct noise_pq_static_identity {
+    u8 pk[NOISE_PQ_PUBLIC_KEY_LEN];
+    u8 sk[NOISE_PQ_SECRET_KEY_LEN];
+    u8 sk_path[256];
+    u8 pk_hash[NOISE_PQ_PUBLIC_KEY_HASH_LEN];
+    u8 precomputed_hash[NOISE_HASH_LEN];
+    struct rw_semaphore lock;
+    bool has_identity;
+};
+#endif /* SUPPORTS_PQC */
 
 enum noise_handshake_state {
 	HANDSHAKE_ZEROED,
@@ -70,10 +84,16 @@ struct noise_handshake {
 
 	struct noise_static_identity *static_identity;
 
+#ifdef SUPPORTS_CURVE
 	u8 ephemeral_private[NOISE_PUBLIC_KEY_LEN];
-	u8 remote_static[NOISE_PUBLIC_KEY_LEN];
 	u8 remote_ephemeral[NOISE_PUBLIC_KEY_LEN];
 	u8 precomputed_static_static[NOISE_PUBLIC_KEY_LEN];
+#endif /* SUPPORTS_CURVE */
+
+	/* Following variables are used in any case to avoid code duplication.
+     */
+
+    u8 remote_static[NOISE_PUBLIC_KEY_LEN]; // for a PQ handshake, represents hash32b(pq_remote_pk)
 
 	u8 preshared_key[NOISE_SYMMETRIC_KEY_LEN];
 
@@ -83,7 +103,19 @@ struct noise_handshake {
 	u8 latest_timestamp[NOISE_TIMESTAMP_LEN];
 	__le32 remote_index;
 
-	/* Protects all members except the immutable (after noise_handshake_
+#ifdef SUPPORTS_PQC
+    bool supports_pq;
+    struct noise_pq_static_identity *pq_static_identity;
+    u8 pq_remote_pk[NOISE_PQ_PUBLIC_KEY_LEN];
+    char pq_remote_pk_path[256];
+
+    u8 pq_precomputed_hash[NOISE_HASH_LEN];
+
+    u8 pq_ephemeral_pk[NOISE_PQ_EPHEMERAL_PUBLIC_KEY_LEN];
+    u8 pq_ephemeral_sk[NOISE_PQ_EPHEMERAL_SECRET_KEY_LEN];
+#endif /* SUPPORTS_PQC */
+
+    /* Protects all members except the immutable (after noise_handshake_
 	 * init): remote_static, precomputed_static_static, static_identity.
 	 */
 	struct rw_semaphore lock;
@@ -92,11 +124,14 @@ struct noise_handshake {
 struct wg_device;
 
 void wg_noise_init(void);
+#ifdef SUPPORTS_CURVE
 void wg_noise_handshake_init(struct noise_handshake *handshake,
 			     struct noise_static_identity *static_identity,
 			     const u8 peer_public_key[NOISE_PUBLIC_KEY_LEN],
 			     const u8 peer_preshared_key[NOISE_SYMMETRIC_KEY_LEN],
 			     struct wg_peer *peer);
+#endif /* SUPPORTS_CURVE */
+
 void wg_noise_handshake_clear(struct noise_handshake *handshake);
 static inline void wg_noise_reset_last_sent_handshake(atomic64_t *handshake_ns)
 {
@@ -111,6 +146,7 @@ bool wg_noise_received_with_keypair(struct noise_keypairs *keypairs,
 				    struct noise_keypair *received_keypair);
 void wg_noise_expire_current_peer_keypairs(struct wg_peer *peer);
 
+#ifdef SUPPORTS_CURVE
 void wg_noise_set_static_identity_private_key(
 	struct noise_static_identity *static_identity,
 	const u8 private_key[NOISE_PUBLIC_KEY_LEN]);
@@ -128,8 +164,33 @@ bool wg_noise_handshake_create_response(struct message_handshake_response *dst,
 struct wg_peer *
 wg_noise_handshake_consume_response(struct message_handshake_response *src,
 				    struct wg_device *wg);
+#endif /* SUPPORTS_CURVE */
 
 bool wg_noise_handshake_begin_session(struct noise_handshake *handshake,
 				      struct noise_keypairs *keypairs);
 
+#ifdef SUPPORTS_PQC
+void wg_noise_pq_handshake_init(struct noise_handshake *handshake,
+                                struct noise_pq_static_identity *pq_static_identity,
+                                const u8 peer_pk[NOISE_PQ_PUBLIC_KEY_LEN],
+                                const u8 peer_pk_hash[NOISE_PQ_PUBLIC_KEY_HASH_LEN],
+                                const char peer_pk_path[256],
+                                const u8 peer_preshared_key[NOISE_SYMMETRIC_KEY_LEN],
+                                struct wg_peer *peer);
+void wg_noise_set_pq_static_identity_sk(struct noise_pq_static_identity *pq_static_identity,
+                                        const u8 sk[NOISE_PQ_SECRET_KEY_LEN], const char *sk_path);
+
+bool
+wg_noise_pq_handshake_create_initiation(struct message_pq_handshake_initiation *dst,
+                                     struct noise_handshake *handshake);
+struct wg_peer *
+wg_noise_pq_handshake_consume_initiation(struct message_pq_handshake_initiation *src,
+                                      struct wg_device *wg);
+
+bool wg_noise_pq_handshake_create_response(struct message_pq_handshake_response *dst,
+                                        struct noise_handshake *handshake);
+struct wg_peer *
+wg_noise_pq_handshake_consume_response(struct message_pq_handshake_response *src,
+                                    struct wg_device *wg);
+#endif /* SUPPORTS_PQC */
 #endif /* _WG_NOISE_H */
